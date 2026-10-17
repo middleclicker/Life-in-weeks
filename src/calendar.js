@@ -69,13 +69,14 @@ export function validatePhase(value, birthday, today = todayISO()) {
   if (typeof value.title !== 'string' || !value.title.trim()) return null;
   return {
     id: typeof value.id === 'string' ? value.id.slice(0, 100) : globalThis.crypto.randomUUID(),
+    originalTitle:String(value.originalTitle || '').slice(0,90),
     title: value.title.trim().slice(0, 90), start: value.start, end: value.end,
     summary: typeof value.summary === 'string' ? value.summary.slice(0, 1200) : '',
     color: Object.hasOwn(COLORS, value.color) ? value.color : 'sage',
     confidence: value.confidence === 'tentative' ? 'tentative' : 'clear',
     source: value.source === 'ai' ? 'ai' : 'manual',
     dateVerified:value.dateVerified === true, analysisVersion:Number(value.analysisVersion) || 0,
-    evidence: Array.isArray(value.evidence) ? value.evidence.filter(e => e && typeof e.quote === 'string' && typeof e.date === 'string').slice(0, 5).map(e => ({ quote: e.quote.slice(0, 500), date: e.date.slice(0, 50), source: String(e.source || '').slice(0, 200),entryId:String(e.entryId || ''),inferredYear:e.inferredYear === true })) : [],
+    evidence: Array.isArray(value.evidence) ? value.evidence.filter(e => e && typeof e.quote === 'string' && typeof e.date === 'string').slice(0, 5).map(e => ({ quote: e.quote.slice(0, 500), date: e.date.slice(0, 50), source: String(e.source || '').slice(0, 200),entryId:String(e.entryId || ''),entryKey:String(e.entryKey || '').slice(0,500),inferredYear:e.inferredYear === true })) : [],
   };
 }
 
@@ -87,12 +88,12 @@ export function validateMilestone(value, birthday, today = todayISO()) {
   if (!value || typeof value !== 'object' || !Number.isFinite(dateValue(value.date)) || value.date < birthday || value.date > today || typeof value.title !== 'string' || !value.title.trim()) return null;
   return {
     id: typeof value.id === 'string' ? value.id.slice(0, 100) : globalThis.crypto.randomUUID(),
-    date: value.date, title: value.title.trim().slice(0, 70),
+    date: value.date, originalTitle:String(value.originalTitle || '').slice(0,90), title: value.title.trim().slice(0, 70),
     summary: typeof value.summary === 'string' ? value.summary.slice(0, 600) : '',
     source: value.source === 'ai' ? 'ai' : 'manual',
     dateVerified:value.dateVerified === true,analysisVersion:Number(value.analysisVersion) || 0,
     importance:Number(value.importance) || 4,kind:String(value.kind || 'other'),
-    evidence: Array.isArray(value.evidence) ? value.evidence.filter(e => e && typeof e.quote === 'string' && typeof e.date === 'string').slice(0, 3).map(e => ({ quote: e.quote.slice(0, 500), date: e.date.slice(0, 50), source: String(e.source || '').slice(0, 200),entryId:String(e.entryId || ''),inferredYear:e.inferredYear === true })) : [],
+    evidence: Array.isArray(value.evidence) ? value.evidence.filter(e => e && typeof e.quote === 'string' && typeof e.date === 'string').slice(0, 3).map(e => ({ quote: e.quote.slice(0, 500), date: e.date.slice(0, 50), source: String(e.source || '').slice(0, 200),entryId:String(e.entryId || ''),entryKey:String(e.entryKey || '').slice(0,500),inferredYear:e.inferredYear === true })) : [],
   };
 }
 

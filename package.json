@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "check": "node --check src/main.js && node --check src/calendar.js && node --check src/analysis.js && node --check src/import.js && node --check src/chronology.js && node --check src/mood.js",
+    "check": "node --check src/main.js && node --check src/calendar.js && node --check src/analysis.js && node --check src/import.js && node --check src/chronology.js && node --check src/mood.js && node --check src/year.js && node --check src/updates.js",
     "test": "node --test tests/*.test.js"
   },
   "dependencies": {

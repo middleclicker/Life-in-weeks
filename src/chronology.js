@@ -60,12 +60,15 @@ export function resolveChronology(text, { today = todayISO(), endingYear } = {})
   const defaultLastYear = Number(today.slice(0,4)) - (last.month*100 + last.day > todayMonthDay ? 1 : 0);
   const finalYear = anchors.length ? anchors[0] + rollovers : Number(endingYear) || defaultLastYear;
   const firstYear = finalYear - rollovers;
+  const occurrences = new Map();
   const entries = nodes.map((node, index) => {
     const year = node.year || firstYear + node.rollover;
     const date = `${year}-${pad(node.month)}-${pad(node.day)}`;
     if (!Number.isFinite(dateValue(date))) errors.push(`“${node.originalHeading}” does not make a valid date in ${year}. Check the ending year.`);
     if (date > today) errors.push(`The inferred date ${date} is in the future. Check the journal’s ending year.`);
-    return { id:`E${String(index + 1).padStart(5,'0')}`, date, inferred:!node.year, source:node.source, originalHeading:node.originalHeading, line:node.line, text:text.slice(node.offset,nodes[index+1]?.offset ?? text.length) };
+    const base = `${node.source}|${date}`;
+    const occurrence = (occurrences.get(base) || 0) + 1; occurrences.set(base,occurrence);
+    return { id:`E${String(index + 1).padStart(5,'0')}`,entryKey:`${base}|${occurrence}`, date, inferred:!node.year, source:node.source, originalHeading:node.originalHeading, line:node.line, text:text.slice(node.offset,nodes[index+1]?.offset ?? text.length) };
   });
   if (nodes[0].offset && text.slice(0,nodes[0].offset).replace(/--- Source: .+ ---/g,'').trim()) warnings.push('Text before the first dated entry is not assigned a date and will not be turned into events.');
   const inferred = entries.filter(e => e.inferred).length;
@@ -76,10 +79,13 @@ export function resolveChronology(text, { today = todayISO(), endingYear } = {})
 // Every section is self-contained. An entry split across two requests retains its ID and resolved date.
 export function prepareJournal(text, options = {}, size = 20000) {
   const chronology = resolveChronology(text, options);
+  return {...chronology,sections:packEntries(chronology.entries,size)};
+}
+export function packEntries(entries,size=20000) {
   const sections = [];
   let current = { text:'', entries:[] };
   const flush = () => { if (current.entries.length) sections.push(current); current = { text:'', entries:[] }; };
-  for (const entry of chronology.entries) {
+  for (const entry of entries) {
     let rest = entry.text;
     const prefix = `[[ENTRY ${entry.id} | date=${entry.date} | year=${entry.inferred ? 'chronologically inferred' : 'written'} | source=${entry.source.replace(/[\n\r\]]/g,' ').slice(0,150)}]]\n`;
     const suffix = '\n[[/ENTRY]]\n';
@@ -99,7 +105,7 @@ export function prepareJournal(text, options = {}, size = 20000) {
     }
   }
   flush();
-  return { ...chronology, sections };
+  return sections;
 }
 
 export function groundedEvidence(evidence, entries) {
@@ -113,6 +119,6 @@ export function groundedEvidence(evidence, entries) {
     const dates = [...new Set(candidates.map(e => e.date))];
     if (dates.length !== 1) return null;
     const entry = candidates[0];
-    return { date:entry.date,quote:String(item.quote).trim().slice(0,500),source:entry.source,entryId:entry.id,inferredYear:entry.inferred };
+    return { date:entry.date,quote:String(item.quote).trim().slice(0,500),source:entry.source,entryId:entry.id,entryKey:entry.entryKey,inferredYear:entry.inferred };
   }).filter(Boolean).filter((item,index,list) => list.findIndex(e => e.date === item.date && e.quote === item.quote) === index);
 }

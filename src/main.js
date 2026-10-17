@@ -3,6 +3,8 @@ import { createIcons, ArrowRight, ArrowUpRight, Plus, X, Upload, Download, Calen
 import { COLORS, DAY, WEEK, ageAt, dateValue, demoState, formatDate, iso, makeCalendar, phaseWeeks, todayISO, validateMilestone, validatePhase } from './calendar.js';
 import { analyzeJournal, MAX_JOURNAL, curateMilestones, mergeMilestones, mergeSuggestions, MODEL_PRESETS, PROVIDERS, reasoningLevels, splitJournal, validateEndpoint } from './analysis.js';
 import { ACCEPT, readJournal } from './import.js';
+import { yearHTML, yearWeeks } from './year.js';
+import { applyUpdate, planUpdate, validateHistory } from './updates.js';
 import { prepareJournal } from './chronology.js';
 import { mergeMoods, moodChartHTML, moodKey, moodLabel, validateMoodPoint } from './mood.js';
 
@@ -15,9 +17,9 @@ const refreshIcons = () => createIcons({ icons: iconSet, attrs: { 'stroke-width'
 const STORAGE = 'little-by-little:v1';
 const today = todayISO();
 let state = demoState(today), remember = false, selected = null, view = 'all', calendar, activeAnalysis, journal = '', drafts = [], draftRejected = 0, readingFiles = false;
-let analysisCheckpoint = null, modalGeneration = 0, journalEndingYear, journalPlan = null;
+let analysisCheckpoint = null, modalGeneration = 0, journalEndingYear, journalPlan = null, draftManifest=[], draftFull=false, updatePlan=null, updatePreviewToken=0;
 let showPencilNotes = true, selectedMilestone = null, draftMilestones = [], draftMoods = [];
-let moodPeriod = 'week', selectedMood, moodPanelWidth;
+let moodPeriod = 'week', selectedMood, moodPanelWidth, focusYear=Number(today.slice(0,4)), fullAnalysisPreference=false;
 let connection = { provider: 'openai', base: PROVIDERS.openai.base, model: PROVIDERS.openai.model, effort:'high', key: '', keys:[], concurrency:'auto' };
 try {
   const saved = JSON.parse(localStorage.getItem(STORAGE));
@@ -26,6 +28,7 @@ try {
     state = { birthday: saved.birthday, years: Math.max(years, Math.ceil((ageAt(saved.birthday, today) + 1) / 10) * 10), demo: false, phases: (Array.isArray(saved.phases) ? saved.phases : []).map(p => validatePhase(p, saved.birthday, today)).filter(Boolean).slice(0, 2000) };
     state.milestones = (Array.isArray(saved.milestones) ? saved.milestones : []).map(m => validateMilestone(m, saved.birthday, today)).filter(Boolean).slice(0, 500);
     state.moods = (Array.isArray(saved.moods) ? saved.moods : []).slice(0,10000).map(p => validateMoodPoint(p,saved.birthday,today)).filter(Boolean);
+    state.analysisHistory=validateHistory(saved.analysisHistory);
     remember = true;
   }
 } catch { /* Private browsing or corrupt local data: start with the example. */ }
@@ -56,9 +59,9 @@ $('#app').innerHTML = `
       <section class="map-column" aria-labelledby="map-title">
         <div class="map-heading"><div><h2 id="map-title">The weeks that make a life<span class="hand-star">✳</span></h2><p id="map-subtitle"></p></div><button class="icon-button" data-action="map-settings" aria-label="Map settings">${icon('settings-2')}</button></div>
         <div class="stats-strip" id="stats"></div>
-        <div class="map-paper paper"><div class="map-toolbar"><div class="segmented" aria-label="Calendar view"><button class="active" data-view="all" aria-pressed="true">Whole life</button><button data-view="lived" aria-pressed="false">So far</button></div><span class="example-tag" id="example-tag">AN EXAMPLE LIFE</span><button class="notes-toggle" data-action="toggle-notes" aria-pressed="true" title="Show or hide pencil notes">${icon('pencil')}<span>Pencil notes</span></button><span class="square-hint"><span class="sample-square"></span> = one week</span></div>
+        <div class="map-paper paper"><div class="map-toolbar"><div class="segmented" aria-label="Calendar view"><button class="active" data-view="all" aria-pressed="true">Whole life</button><button data-view="lived" aria-pressed="false">So far</button><button data-view="year" aria-pressed="false">A year</button></div><span class="example-tag" id="example-tag">AN EXAMPLE LIFE</span><button class="notes-toggle" data-action="toggle-notes" aria-pressed="true" title="Show or hide pencil notes">${icon('pencil')}<span>Pencil notes</span></button><span class="square-hint"><span class="sample-square"></span> = one week</span></div>
           <div id="date-recheck" class="date-recheck" hidden><strong>Previous AI dates need a check.</strong><span>The old analysis did not verify quotes against entry dates. It is preserved, but hidden from the calendar until you re-analyze or edit it.</span><button class="link-button" data-action="journal">Re-analyze my journal ${icon('arrow-right')}</button></div><div id="filter-notice" class="filter-notice" hidden></div>
-          <div class="calendar-scroll"><div class="calendar-inner"><div class="week-axis"><span>AGE</span><span>1</span><span>13</span><span>26</span><span>39</span><span>52</span></div><div id="weeks-grid" role="grid" aria-label="Life calendar. Arrow keys move between weeks; Enter opens a week."></div><svg id="pencil-notes" class="pencil-notes" aria-hidden="true"></svg></div></div>
+          <div id="year-controls" class="year-controls" hidden><button class="icon-button" data-year-step="-1" aria-label="Previous year">←</button><label for="focus-year">A closer look</label><select id="focus-year"></select><button class="icon-button" data-year-step="1" aria-label="Next year">→</button></div><div id="year-map" hidden></div><div class="calendar-scroll"><div class="calendar-inner"><div class="week-axis"><span>AGE</span><span>1</span><span>13</span><span>26</span><span>39</span><span>52</span></div><div id="weeks-grid" role="grid" aria-label="Life calendar. Arrow keys move between weeks; Enter opens a week."></div><svg id="pencil-notes" class="pencil-notes" aria-hidden="true"></svg></div></div>
           <div class="calendar-legend"><span><i class="legend-square lived"></i> Weeks lived</span><span><i class="legend-square current"></i> This week</span><span><i class="legend-square future"></i> Still unwritten</span></div>
           <p class="calendar-caption">Scroll across the calendar to see every week. Every square is seven days. Rows group weeks by age at their start.<br>Some years have 53 week starts. Overlapping chapters share a square.</p>
         </div>
@@ -83,7 +86,7 @@ function toast(message) {
 
 function persist() {
   try {
-    if (remember && !state.demo) localStorage.setItem(STORAGE, JSON.stringify({ version: 1, birthday: state.birthday, years: state.years, phases: state.phases, milestones: state.milestones, moods:state.moods || [] }));
+    if (remember && !state.demo) localStorage.setItem(STORAGE, JSON.stringify({ version: 1, birthday: state.birthday, years: state.years, phases: state.phases, milestones: state.milestones, moods:state.moods || [],analysisHistory:state.analysisHistory }));
     else localStorage.removeItem(STORAGE);
   } catch { toast('Browser storage is unavailable. Download your map to keep a copy.'); }
 }
@@ -97,6 +100,14 @@ function render() {
   $('#example-tag').hidden = !state.demo;
   $('#birthday-submit').innerHTML = `${state.demo ? 'Make it my map' : 'Update my map'} ${icon('arrow-right')}`;
   $('#stats').innerHTML = `<div><strong>${calendar.completed.toLocaleString()}</strong><span>weeks lived <i class="tiny-spark">✧</i></span></div><div><strong>${calendar.age}<small> years</small></strong><span>of being you</span></div><div><strong>${state.phases.length}<small> chapters</small></strong><span>and still becoming</span></div>`;
+  $('[data-action="toggle-notes"]').hidden=view==='year'; $('.calendar-caption').hidden=view==='year';
+  $('#year-controls').hidden=view!=='year'; $('#year-map').hidden=view!=='year';
+  $('.calendar-scroll').hidden=view==='year';
+  const firstYear=Number(state.birthday.slice(0,4)),lastYear=new Date(calendar.weeks.at(-1).start).getUTCFullYear();
+  focusYear=Math.max(firstYear,Math.min(lastYear,focusYear));
+  $('#focus-year').innerHTML=Array.from({length:lastYear-firstYear+1},(_,i)=>'<option value="'+(firstYear+i)+'" '+(firstYear+i===focusYear?'selected':'')+'>'+(firstYear+i)+'</option>').join('');
+  $('#focus-year').onchange=event=>{focusYear=Number(event.target.value);selectedMood=undefined;render();};
+  $('#year-map').innerHTML=view==='year'?yearHTML(calendar,focusYear,{milestones:state.milestones,moods:state.moods || [],birthday:state.birthday,colors:COLORS}):'';
   const rows = view === 'lived' ? calendar.rows.filter(r => r.weeks.some(w => w.lived)) : calendar.rows;
   $('#weeks-grid').innerHTML = rows.map(row => `<div class="week-row ${row.age % 10 === 0 ? 'decade-row' : ''}" role="row" aria-label="Age ${row.age}"><span class="age-label" aria-hidden="true">${row.age % 5 === 0 || row.age === calendar.age ? row.age : ''}</span><div class="row-squares">${row.weeks.map((week, col) => {
     const fills = week.phases.map(p => COLORS[p.color].fill);
@@ -119,7 +130,7 @@ function render() {
 
 function renderMood() {
   moodPanelWidth=$('#mood-panel').clientWidth;
-  $('#mood-panel').innerHTML = (state.demo ? '<p class="example-tag">ILLUSTRATIVE EXAMPLE</p>' : '') + moodChartHTML(state.moods || [],state.birthday,{period:moodPeriod,selected:selectedMood,chartWidth:Math.max(300,moodPanelWidth-(window.innerWidth<=760?38:64))});
+  $('#mood-panel').innerHTML = (state.demo ? '<p class="example-tag">ILLUSTRATIVE EXAMPLE</p>' : '') + moodChartHTML((state.moods || []).filter(p=>view!=='year'||Number(p.date.slice(0,4))===focusYear),state.birthday,{milestones:state.milestones.filter(m=>view!=='year'||Number(m.date.slice(0,4))===focusYear),period:moodPeriod,selected:selectedMood,chartWidth:Math.max(300,moodPanelWidth-(window.innerWidth<=760?38:64))});
   if ($('#mood-point')) $('#mood-point').onchange = event => { selectedMood=event.target.value; renderMood(); };
 }
 
@@ -130,7 +141,7 @@ function renderPencilNotes() {
   layer.hidden = !showPencilNotes;
   const toggle = $('[data-action="toggle-notes"]');
   toggle?.setAttribute('aria-pressed', String(showPencilNotes));
-  if (!showPencilNotes || !state.milestones.length) return;
+  if (!showPencilNotes || view==='year' || !state.milestones.length) return;
   const inner = $('.calendar-inner'), bounds = inner.getBoundingClientRect();
   const width = inner.clientWidth, height = inner.clientHeight;
   layer.setAttribute('viewBox', `0 0 ${width} ${height}`);
@@ -225,6 +236,18 @@ $('#years').onchange = event => {
   state.years = Number(event.target.value); render(); persist();
 };
 
+function showMoodCorrection(key) {
+  const point=(state.moods || []).find(p=>moodKey(p)===key);
+  if(!point) return;
+  openModal('How did it feel to you?',formatDate(point.date)+' · your judgment comes first',`<form class="modal-body" id="mood-correction-form"><label for="mood-score">Your mood rating</label><select id="mood-score">${[1,2,3,4,5].map(n=>'<option value="'+n+'" '+(Math.round(point.score)===n?'selected':'')+'>'+n+' · '+moodLabel(n)+'</option>').join('')}</select><label for="mood-explanation">Your explanation</label><textarea id="mood-explanation" maxlength="400" rows="3">${escape(point.summary)}</textarea><details class="evidence"><summary>Original journal evidence</summary>${evidenceHTML(point)}</details><p class="field-note">This correction is kept when your journal is analyzed again. Save your map to keep it between visits.</p><button class="button primary full" type="submit">Save my correction</button></form>`);
+  $('#mood-correction-form').onsubmit=event=>{
+    event.preventDefault();
+    const valid=validateMoodPoint({...point,score:Number($('#mood-score').value),summary:$('#mood-explanation').value,corrected:true,confidence:'clear'},state.birthday,today);
+    if(!valid) return;
+    state.moods=state.moods.map(p=>moodKey(p)===key?valid:p);render();persist();closeModal();toast('Your mood correction is saved on the map.');
+  };
+}
+
 function showChapter(id, range) {
   if (state.demo) { showStart(() => showChapter()); return; }
   const phase = state.phases.find(p => p.id === id);
@@ -233,7 +256,7 @@ function showChapter(id, range) {
   $('#chapter-form').onsubmit = event => {
     event.preventDefault();
     const value = { ...original, id: id || crypto.randomUUID(), title: $('#chapter-title').value, start: $('#chapter-start').value, end: $('#chapter-end').value, summary: $('#chapter-summary').value, color: $('input[name="chapter-color"]:checked').value };
-    const valid = validatePhase({...value,dateVerified:true,source:'manual'}, state.birthday, today);
+    const valid = validatePhase({...value,originalTitle:original.originalTitle || (phase?.source==='ai' ? phase.title : ''),dateVerified:true,source:'manual'}, state.birthday, today);
     if (!valid) { $('#chapter-error').textContent = 'Use a title and valid dates between your birthday and today, with the end on or after the start.'; return; }
     if (phase) state.phases[state.phases.findIndex(p => p.id === id)] = valid; else state.phases.push(valid);
     render(); persist(); closeModal(); toast('A chapter added to your story.');
@@ -248,7 +271,7 @@ function showNote(id, initialDate) {
   openModal(note ? 'A moment worth circling.' : 'Leave a little note.', 'A date, a few words, a little pencil mark on your map.', `<form id="note-form" class="modal-body"><label for="note-title">What happened?</label><input id="note-title" maxlength="70" value="${escape(original.title)}" placeholder="off to college!" required autofocus><label for="note-date">Circle this date</label><input id="note-date" type="date" min="${state.birthday}" max="${today}" value="${original.date}" required><label for="note-summary">A little more of the story <span class="optional-label">optional</span></label><textarea id="note-summary" maxlength="600" rows="3" placeholder="The part you want to remember.">${escape(original.summary)}</textarea>${original.evidence.length ? `<details class="evidence"><summary>The journal entry behind this note</summary>${evidenceHTML(original)}</details>` : ''}<p id="note-error" class="form-error" role="alert"></p><div class="modal-actions">${note ? `<button type="button" class="button danger-quiet" data-delete-note="${escape(note.id)}">${icon('trash-2')} Erase this note</button>` : '<span></span>'}<button class="button primary" type="submit">Pencil it in ${icon('pencil')}</button></div></form>`);
   $('#note-form').onsubmit = event => {
     event.preventDefault();
-    const next = validateMilestone({ ...original, id: id || crypto.randomUUID(), source:'manual', dateVerified:true, title: $('#note-title').value, date: $('#note-date').value, summary: $('#note-summary').value }, state.birthday, today);
+    const next = validateMilestone({ ...original, originalTitle:original.originalTitle || (original.source==='ai'?original.title:''), id: id || crypto.randomUUID(), source:'manual', dateVerified:true, title: $('#note-title').value, date: $('#note-date').value, summary: $('#note-summary').value }, state.birthday, today);
     if (!next) { $('#note-error').textContent = 'Give this moment a title and a date between your birthday and today.'; return; }
     if (note) state.milestones[state.milestones.findIndex(m => m.id === id)] = next; else state.milestones.push(next);
     selectedMilestone = next.id; showPencilNotes = true; render(); persist(); closeModal(); toast('A little pencil mark. A moment remembered.');
@@ -335,7 +358,8 @@ function showConnection(returnToJournal = false) {
 function showJournal() {
   const keyCount=new Set([connection.key,...(connection.keys || [])].filter(Boolean)).size;
   if (state.demo) { showStart(showJournal); return; }
-  openModal('Your words hold a whole world.', 'Bring your journals. We’ll help you find the chapters.', `<div class="modal-body"><div class="drop-zone" id="drop-zone"><input type="file" id="journal-files" accept="${ACCEPT}" multiple class="sr-only"><label for="journal-files">${icon('upload')}<strong>Drop your journals here</strong><span>or <u>choose files</u> from your device</span><small>Markdown, text, Word, PDF, ODT, HTML · up to 50 MB per file</small></label></div><p class="field-note">Google Docs: File → Download → Word (.docx). Scanned PDFs need OCR first. Keep dates in your entries or filenames. Long journals, including 100,000+ words, are read in manageable sections.</p><div class="journal-preview-header"><label for="journal-text">Or paste your journal below</label><button class="link-button" id="clear-journal">Clear text</button></div><textarea id="journal-text" rows="7" maxlength="${MAX_JOURNAL}" placeholder="# 2025-01-12\nI said yes to coffee today, even though I was nervous…\n\n# 2025-03-24\nStill practicing starting conversations. It’s getting a little easier.">${escape(journal)}</textarea><div class="journal-count" id="journal-count"></div><section class="chronology-preview"><div class="chronology-preview-heading"><h3>Check the timeline</h3><div><label for="journal-ending-year">Year of the last entry</label><input id="journal-ending-year" type="number" min="1900" max="${today.slice(0,4)}" value="${journalEndingYear || ''}" placeholder="Auto"></div></div><div id="chronology-summary"></div><details id="date-preview"><summary>Inspect the resolved entry dates</summary><div id="date-preview-rows"></div></details></section><div id="resume-status" class="resume-status" hidden></div><button class="connection-summary" data-action="connection">${icon('sparkles')}<span><strong>${PROVIDERS[connection.provider].name}</strong><small>${connection.key || connection.keys?.length || connection.provider === 'custom' ? escape(connection.model)+(connection.provider === 'deepseek' ? ' · '+keyCount+' key'+(keyCount===1?'':'s') : '') : 'Add your API key to get started'}</small></span>${icon('chevron-right')}</button><div class="send-disclosure"><label class="checkbox-label"><input id="send-consent" type="checkbox"><span>I’m ready to send this journal to <strong>${escape(new URL(connection.base || 'https://example.com').hostname)}</strong> for analysis.</span></label><p>You’ll review every suggested chapter before adding it. Journals and keys stay in this tab’s memory; closing this tab or reloading clears them. Your provider’s data policies and API charges apply.</p></div><p id="journal-error" class="form-error" role="alert"></p><div id="analysis-progress" class="analysis-progress" role="status" aria-live="polite" hidden></div><div class="modal-actions"><button class="button outline" id="cancel-analysis" hidden>Pause reading</button><span id="analysis-subnote">Your life is yours to interpret.</span><button class="button primary" id="analyze-button">${icon('sparkles')} Find my chapters</button></div></div>`, 'journal-modal');
+  openModal('Your words hold a whole world.', 'Bring your journals. We’ll help you find the chapters.', `<div class="modal-body"><label for="import-mode">When importing files</label><select id="import-mode"><option value="replace">Replace the text below (re-import an updated journal)</option><option value="append">Append to the text below (add another journal)</option></select><div class="drop-zone" id="drop-zone"><input type="file" id="journal-files" accept="${ACCEPT}" multiple class="sr-only"><label for="journal-files">${icon('upload')}<strong>Drop your journals here</strong><span>or <u>choose files</u> from your device</span><small>Markdown, text, Word, PDF, ODT, HTML · up to 50 MB per file</small></label></div><p class="field-note">Google Docs: File → Download → Word (.docx). Scanned PDFs need OCR first. Keep dates in your entries or filenames. Long journals, including 100,000+ words, are read in manageable sections.</p><div class="journal-preview-header"><label for="journal-text">Or paste your journal below</label><button class="link-button" id="clear-journal">Clear text</button></div><textarea id="journal-text" rows="7" maxlength="${MAX_JOURNAL}" placeholder="# 2025-01-12\nI said yes to coffee today, even though I was nervous…\n\n# 2025-03-24\nStill practicing starting conversations. It’s getting a little easier.">${escape(journal)}</textarea><div class="journal-count" id="journal-count"></div><section class="chronology-preview"><div class="chronology-preview-heading"><h3>Check the timeline</h3><div><label for="journal-ending-year">Year of the last entry</label><input id="journal-ending-year" type="number" min="1900" max="${today.slice(0,4)}" value="${journalEndingYear || ''}" placeholder="Auto"></div></div><div id="chronology-summary"></div><details id="date-preview"><summary>Inspect the resolved entry dates</summary><div id="date-preview-rows"></div></details></section><label class="checkbox-label update-mode"><input id="full-analysis" type="checkbox"><span>Re-analyze every entry<small>Leave off to analyze only new or changed entries. Your corrections are preserved.</small></span></label><div id="update-preview" class="field-note" role="status"></div><div id="resume-status" class="resume-status" hidden></div><button class="connection-summary" data-action="connection">${icon('sparkles')}<span><strong>${PROVIDERS[connection.provider].name}</strong><small>${connection.key || connection.keys?.length || connection.provider === 'custom' ? escape(connection.model)+(connection.provider === 'deepseek' ? ' · '+keyCount+' key'+(keyCount===1?'':'s') : '') : 'Add your API key to get started'}</small></span>${icon('chevron-right')}</button><div class="send-disclosure"><label class="checkbox-label"><input id="send-consent" type="checkbox"><span>I’m ready to send this journal to <strong>${escape(new URL(connection.base || 'https://example.com').hostname)}</strong> for analysis.</span></label><p>You’ll review every suggested chapter before adding it. Journals and keys stay in this tab’s memory; closing this tab or reloading clears them. Your provider’s data policies and API charges apply.</p></div><p id="journal-error" class="form-error" role="alert"></p><div id="analysis-progress" class="analysis-progress" role="status" aria-live="polite" hidden></div><div class="modal-actions"><button class="button outline" id="cancel-analysis" hidden>Pause reading</button><span id="analysis-subnote">Your life is yours to interpret.</span><button class="button primary" id="analyze-button">${icon('sparkles')} Find my chapters</button></div></div>`, 'journal-modal');
+  $('#full-analysis').checked=fullAnalysisPreference;
   const updateCount = () => {
     const nextText = $('#journal-text').value;
     if (nextText !== journal) analysisCheckpoint = null;
@@ -345,8 +369,10 @@ function showJournal() {
     renderDatePreview();
     const words = journal.trim() ? journal.trim().split(/\s+/u).length : 0;
     $('#journal-count').textContent = `${words.toLocaleString()} words · ${journal.length.toLocaleString()} / ${MAX_JOURNAL.toLocaleString()} characters · ${requests} section${requests === 1 ? '' : 's'}`;
+    refreshUpdatePreview();
     updateAnalysisControls();
   };
+  $('#full-analysis').onchange=()=>{fullAnalysisPreference=$('#full-analysis').checked;analysisCheckpoint=null;refreshUpdatePreview();};
   updateCount();
   $('#journal-text').oninput = updateCount;
   $('#journal-ending-year').onchange = () => { journalEndingYear = Number($('#journal-ending-year').value) || undefined; analysisCheckpoint = null; updateCount(); };
@@ -358,6 +384,16 @@ function showJournal() {
   drop.addEventListener('drop', event => addFiles([...event.dataTransfer.files], updateCount));
   $('#analyze-button').onclick = startAnalysis;
   $('#cancel-analysis').onclick = () => activeAnalysis?.abort();
+}
+
+async function refreshUpdatePreview() {
+  const token=++updatePreviewToken;
+  if(!journalPlan || journalPlan.errors.length) { updatePlan=null; $('#update-preview').textContent=''; return; }
+  const plan=await planUpdate(journalPlan,state.analysisHistory,{full:$('#full-analysis').checked});
+  if(token!==updatePreviewToken || !$('#update-preview')) return;
+  updatePlan=plan;
+  $('#update-preview').textContent=plan.changed.length+' new or changed entries · '+plan.unchanged+' unchanged entries skipped · '+plan.sections.length+' requests. Entry fingerprints stay with your saved map; full journal text stays in this tab.';
+  updateAnalysisControls();
 }
 
 function renderDatePreview() {
@@ -378,7 +414,12 @@ function updateAnalysisControls() {
   $('#resume-status').hidden = !cp?.completed;
   if (cp?.completed) {
     $('#resume-status').innerHTML = `<span>${icon('check')} ${cp.completed} of ${cp.total} sections read. ${complete ? 'Ready to review.' : 'You can continue without rereading completed sections.'}</span><small>Progress stays in this tab. Reloading clears it.</small><div><button class="link-button" id="review-partial">Review completed sections</button><button class="link-button" id="reset-analysis">Start over</button></div>`;
-    $('#review-partial').onclick = () => { drafts = mergeSuggestions(cp.phases); draftMilestones = curateMilestones(cp.milestones || []); draftMoods=mergeMoods(cp.moods || []); draftRejected = cp.rejected; showReview(); };
+    $('#review-partial').onclick = () => {
+      draftManifest=cp.manifest || []; const ready=new Set(draftManifest.map(e=>e.key));
+      const supported=p=>p.evidence?.every(e=>!e.entryKey || ready.has(e.entryKey));
+      drafts=mergeSuggestions(cp.phases.filter(supported)); draftMilestones=curateMilestones((cp.milestones || []).filter(supported)); draftMoods=mergeMoods((cp.moods || []).filter(p=>!p.entryKey||ready.has(p.entryKey)));
+      draftRejected=cp.rejected; showReview();
+    };
     $('#reset-analysis').onclick = () => { analysisCheckpoint = null; updateAnalysisControls(); toast('Analysis progress cleared. Your journal and map are still here.'); };
   }
   refreshIcons();
@@ -392,6 +433,9 @@ async function addFiles(files, updateCount) {
   $('#analyze-button').disabled = true;
   $('.connection-summary').disabled = true;
   $('#clear-journal').disabled = true;
+  $('#full-analysis').disabled=true;
+  $('#journal-ending-year').disabled=true;
+  $('#import-mode').disabled=true;
   $('#journal-error').textContent = '';
   const errors = [], parts = [];
   toast('Reading your journals on this device…');
@@ -401,11 +445,11 @@ async function addFiles(files, updateCount) {
   }
   // The user may have closed the dialog while a large document was being read.
   if ($('#journal-text') && generation === modalGeneration && modal.open) {
-    const combined = [$('#journal-text').value, ...parts].filter(Boolean).join('\n\n');
+    const combined = [$('#import-mode').value==='append'?$('#journal-text').value:'', ...parts].filter(Boolean).join('\n\n');
     if (combined.length > MAX_JOURNAL) errors.push('These documents exceed 5 million characters together. No new text was added. Import a smaller selection.');
-    else { $('#journal-text').value = combined; updateCount(); }
+    else if(parts.length) { $('#journal-text').value = combined; updateCount(); }
     $('#journal-error').textContent = errors.join(' ');
-    $('#journal-files').disabled = false; $('#journal-files').value = ''; $('#analyze-button').disabled = false; $('.connection-summary').disabled = false; $('#clear-journal').disabled = false;
+    $('#journal-files').disabled = false; $('#journal-files').value = ''; $('#analyze-button').disabled = false; $('.connection-summary').disabled = false; $('#clear-journal').disabled = false; $('#full-analysis').disabled=false; $('#import-mode').disabled=false; $('#journal-ending-year').disabled=!!journalPlan?.anchored;
   }
   readingFiles = false;
   if (!errors.length && parts.length) toast(`${parts.length} journal${parts.length === 1 ? '' : 's'} added. Take a look before sending.`);
@@ -417,6 +461,10 @@ async function startAnalysis() {
   if (!journal.trim()) { $('#journal-error').textContent = 'Add a journal or paste some entries first.'; return; }
   journalPlan = prepareJournal(journal,{today,endingYear:journalEndingYear});
   if (journalPlan.errors.length) { $('#journal-error').textContent = journalPlan.errors.join(' '); return; }
+  const fullAnalysis=$('#full-analysis').checked;
+  const pendingPlan=await planUpdate(journalPlan,state.analysisHistory,{full:fullAnalysis});
+  if(!pendingPlan.changed.length){toast('Your map is up to date. No new or changed entries to analyze.'); return;}
+  draftFull=fullAnalysis;
   if (!connection.key && !connection.keys?.length && connection.provider !== 'custom') { showConnection(true); return; }
   const hasCompleteAnalysis = analysisCheckpoint && analysisCheckpoint.completed === analysisCheckpoint.total;
   if (!hasCompleteAnalysis && !$('#send-consent').checked) { $('#journal-error').textContent = 'Check the box above when you’re ready to send this journal to your provider.'; return; }
@@ -427,12 +475,15 @@ async function startAnalysis() {
   $('#journal-text').readOnly = true;
   $('#journal-files').disabled = true;
   $('#clear-journal').disabled = true;
+  $('#full-analysis').disabled=true;
+  $('#journal-ending-year').disabled=true;
+  $('#import-mode').disabled=true;
   $('.connection-summary').disabled = true;
   $('#cancel-analysis').hidden = false; $('#analysis-subnote').hidden = true;
   $('#analysis-progress').hidden = false;
   $('#resume-status').hidden = true;
   try {
-    const result = await analyzeJournal({ text: journal, ...connection, birthday: state.birthday, today, endingYear:journalEndingYear, signal: controller.signal,
+    const result = await analyzeJournal({ text: journal, ...connection, history:state.analysisHistory,fullAnalysis, birthday: state.birthday, today, endingYear:journalEndingYear, signal: controller.signal,
       checkpoint: analysisCheckpoint, onCheckpoint: cp => { if (!controller.signal.aborted) analysisCheckpoint = cp; },
       onProgress: (n, total, progress) => {
         if ($('#analysis-progress') && generation === modalGeneration && modal.open) {
@@ -442,14 +493,14 @@ async function startAnalysis() {
       }
     });
     if (controller.signal.aborted || !modal.open) return;
-    drafts = result.phases; draftMilestones = result.milestones; draftMoods = result.moods; draftRejected = result.rejected;
+    drafts = result.phases; draftMilestones = result.milestones; draftMoods = result.moods; draftManifest=result.manifest || []; draftRejected = result.rejected;
     activeAnalysis = null;
     showReview();
   } catch (error) {
     if ($('#journal-error') && generation === modalGeneration && modal.open) $('#journal-error').textContent = error.name === 'AbortError' ? 'Reading paused. Completed sections are kept in this tab. Continue when you’re ready; interrupted requests may still be billed by your provider.' : `${error.message} Completed sections are kept in this tab; continue to retry the remaining sections. No chapters were changed.`;
   } finally {
     if (activeAnalysis === controller) activeAnalysis = null;
-    if ($('#analyze-button') && generation === modalGeneration) { $('#analyze-button').disabled = false; $('#journal-text').readOnly = false; $('#journal-files').disabled = false; $('#clear-journal').disabled = false; $('.connection-summary').disabled = false; $('#cancel-analysis').hidden = true; $('#analysis-progress').hidden = true; $('#analysis-subnote').hidden = false; updateAnalysisControls(); }
+    if ($('#analyze-button') && generation === modalGeneration) { $('#analyze-button').disabled = false; $('#journal-text').readOnly = false; $('#journal-files').disabled = false; $('#clear-journal').disabled = false; $('#full-analysis').disabled=false; $('#import-mode').disabled=false; $('#journal-ending-year').disabled=!!journalPlan?.anchored; $('.connection-summary').disabled = false; $('#cancel-analysis').hidden = true; $('#analysis-progress').hidden = true; $('#analysis-subnote').hidden = false; updateAnalysisControls(); }
   }
 }
 
@@ -459,13 +510,14 @@ function moodReviewHTML() {
 }
 
 function showReview() {
-  openModal('Does this feel like your story?', 'These are suggestions. You have the final word.', `<div class="modal-body"><div class="review-note">${icon('sparkles')}<p>${drafts.length || draftMilestones.length || draftMoods.length ? 'Choose the chapters, pencil notes, and mood estimates that resonate. Edit chapter titles and dates, review the supporting excerpts, then add your selections.' : 'No chapters with verifiable dated evidence were found. Try entries with clear dates and repeated themes, or write a chapter yourself.'}${draftRejected ? ` ${draftRejected} suggestion${draftRejected === 1 ? ' was' : 's were'} left out because the dates or quotations couldn’t be verified.` : ''}</p></div><div class="review-list">${drafts.map((p, i) => `<article class="review-card" style="--chapter-color:${COLORS[p.color].fill}"><label class="checkbox-label"><input type="checkbox" data-draft="${i}" checked><span><strong>Include this chapter</strong><small>${p.confidence === 'tentative' ? 'Tentative · check the dates carefully' : 'Supported by journal excerpts'}</small></span></label><label class="sr-only" for="draft-title-${i}">Chapter title ${i + 1}</label><input id="draft-title-${i}" value="${escape(p.title)}" maxlength="90"><div class="two-fields"><div><label for="draft-start-${i}">From</label><input id="draft-start-${i}" type="date" min="${state.birthday}" max="${today}" value="${p.start}"></div><div><label for="draft-end-${i}">To</label><input id="draft-end-${i}" type="date" min="${state.birthday}" max="${today}" value="${p.end}"></div></div><label class="sr-only" for="draft-summary-${i}">Chapter description ${i + 1}</label><textarea id="draft-summary-${i}" rows="2">${escape(p.summary)}</textarea><details class="evidence"><summary>Read the supporting excerpts</summary>${evidenceHTML(p)}</details></article>`).join('')}</div>${milestoneReviewHTML()}${moodReviewHTML()}${state.phases.some(p => p.source === 'ai') || state.milestones.some(m => m.source === 'ai') || state.moods?.length ? `<label class="checkbox-label replace-analysis"><input id="replace-ai-analysis" type="checkbox" checked><span>Replace the previous AI analysis, keeping my manual chapters and notes, and replace the mood estimates.</span></label>` : ''}<p id="review-error" class="form-error" role="alert"></p><div class="modal-actions"><button class="button outline" data-action="journal">Back to journal</button>${drafts.length || draftMilestones.length || draftMoods.length ? `<button class="button primary" id="apply-drafts">Add selected to my map ${icon('check')}</button>` : `<button class="button primary" data-action="add">Write my own chapter ${icon('plus')}</button>`}</div><p class="field-note">AI interpretations may be incomplete. Verify dates against your journal. Nothing is a diagnosis.</p></div>`, 'journal-modal');
+  openModal('Does this feel like your story?', 'These are suggestions. You have the final word.', `<div class="modal-body"><div class="review-note">${icon('sparkles')}<p>${drafts.length || draftMilestones.length || draftMoods.length || draftManifest.length ? 'Choose the chapters, pencil notes, and mood estimates that resonate. Edit chapter titles and dates, review the supporting excerpts, then add your selections.' : 'No chapters with verifiable dated evidence were found. Try entries with clear dates and repeated themes, or write a chapter yourself.'}${draftRejected ? ` ${draftRejected} suggestion${draftRejected === 1 ? ' was' : 's were'} left out because the dates or quotations couldn’t be verified.` : ''}</p></div><p class="field-note">${draftManifest.length} entries processed. Only affected AI results will be refreshed; your manual corrections stay.</p><div class="review-list">${drafts.map((p, i) => `<article class="review-card" style="--chapter-color:${COLORS[p.color].fill}"><label class="checkbox-label"><input type="checkbox" data-draft="${i}" checked><span><strong>Include this chapter</strong><small>${p.confidence === 'tentative' ? 'Tentative · check the dates carefully' : 'Supported by journal excerpts'}</small></span></label><label class="sr-only" for="draft-title-${i}">Chapter title ${i + 1}</label><input id="draft-title-${i}" value="${escape(p.title)}" maxlength="90"><div class="two-fields"><div><label for="draft-start-${i}">From</label><input id="draft-start-${i}" type="date" min="${state.birthday}" max="${today}" value="${p.start}"></div><div><label for="draft-end-${i}">To</label><input id="draft-end-${i}" type="date" min="${state.birthday}" max="${today}" value="${p.end}"></div></div><label class="sr-only" for="draft-summary-${i}">Chapter description ${i + 1}</label><textarea id="draft-summary-${i}" rows="2">${escape(p.summary)}</textarea><details class="evidence"><summary>Read the supporting excerpts</summary>${evidenceHTML(p)}</details></article>`).join('')}</div>${milestoneReviewHTML()}${moodReviewHTML()}<p id="review-error" class="form-error" role="alert"></p><div class="modal-actions"><button class="button outline" data-action="journal">Back to journal</button>${drafts.length || draftMilestones.length || draftMoods.length || draftManifest.length ? `<button class="button primary" id="apply-drafts">Add selected to my map ${icon('check')}</button>` : `<button class="button primary" data-action="add">Write my own chapter ${icon('plus')}</button>`}</div><p class="field-note">AI interpretations may be incomplete. Verify dates against your journal. Nothing is a diagnosis.</p></div>`, 'journal-modal');
   if ($('#apply-drafts')) $('#apply-drafts').onclick = () => {
     const chosen = [];
     for (let i = 0; i < drafts.length; i++) {
       if (!$(`[data-draft="${i}"]`).checked) continue;
       const phase = validatePhase({ ...drafts[i], title: $(`#draft-title-${i}`).value, start: $(`#draft-start-${i}`).value, end: $(`#draft-end-${i}`).value, summary: $(`#draft-summary-${i}`).value }, state.birthday, today);
       if (!phase) { $('#review-error').textContent = `Check chapter ${i + 1}: use a title and dates between your birthday and today, with the end after the start.`; return; }
+      if(phase.title!==drafts[i].title || phase.start!==drafts[i].start || phase.end!==drafts[i].end || phase.summary!==drafts[i].summary){phase.originalTitle=drafts[i].title;phase.source='manual';}
       chosen.push(phase);
     }
     const chosenMilestones = [];
@@ -473,21 +525,21 @@ function showReview() {
       if (!$(`[data-event-draft="${i}"]`).checked) continue;
       const event = validateMilestone({ ...draftMilestones[i], title: $(`#event-title-${i}`).value, date: $(`#event-date-${i}`).value, summary: $(`#event-summary-${i}`).value }, state.birthday, today);
       if (!event) { $('#review-error').textContent = `Check pencil note ${i + 1}: use a title and a date between your birthday and today.`; return; }
+      if(event.title!==draftMilestones[i].title || event.date!==draftMilestones[i].date || event.summary!==draftMilestones[i].summary){event.originalTitle=draftMilestones[i].title;event.source='manual';}
       chosenMilestones.push(event);
     }
     const chosenMoods = $('#include-moods')?.checked ? draftMoods.filter((p,i)=>$('[data-mood-draft="'+i+'"]').checked) : [];
-    if (!chosen.length && !chosenMilestones.length && !chosenMoods.length) { $('#review-error').textContent = 'Choose a chapter, pencil note, or the mood estimates to add.'; return; }
-    if ($('#replace-ai-analysis')?.checked) { state.phases = state.phases.filter(p => p.source !== 'ai'); state.milestones = state.milestones.filter(m => m.source !== 'ai'); state.moods = []; selected = null; }
-    const additions = chosen.filter(p => !state.phases.some(existing => existing.title.toLowerCase() === p.title.toLowerCase() && existing.start === p.start && existing.end === p.end));
-    const updatedMoods=new Map((state.moods || []).map(p=>[moodKey(p),p]));
-    for (const point of chosenMoods) updatedMoods.set(moodKey(point),point);
-    state.moods=mergeMoods([...updatedMoods.values()]);
-    state.phases.push(...additions); state.milestones = mergeMilestones([...state.milestones,...chosenMilestones]); render(); persist(); closeModal(); toast(`Added ${additions.length} chapter${additions.length === 1 ? '' : 's'} and ${chosenMilestones.length} pencil note${chosenMilestones.length === 1 ? '' : 's'}, with ${chosenMoods.length} mood estimate${chosenMoods.length === 1 ? '' : 's'}. Your story is taking shape.`);
+    if (!chosen.length && !chosenMilestones.length && !chosenMoods.length && !draftManifest.length) { $('#review-error').textContent = 'Choose a chapter, pencil note, or the mood estimates to add.'; return; }
+    state=applyUpdate(state,{phases:chosen,milestones:chosenMilestones,moods:chosenMoods,manifest:draftManifest},{full:draftFull});
+    state.phases=mergeSuggestions(state.phases); state.milestones=mergeMilestones(state.milestones); state.moods=mergeMoods(state.moods);
+    analysisCheckpoint=null; selected=null; render(); persist(); closeModal();
+    toast('Map updated. Your corrections were kept, and '+draftManifest.length+' entries are now remembered.');
+
   };
 }
 
 function showPrivacy() {
-  openModal('A private little space.', 'A few things worth knowing about your words.', `<div class="modal-body prose"><p><strong>Your map lives on your device.</strong> This is a static website. There’s no account, shared database, or analytics. Journals are read locally and only sent to the AI endpoint you choose when you ask for an analysis.</p><p><strong>Your key stays in this tab’s memory.</strong> It is never saved to browser storage or exported. Refreshing clears it. This is a browser-based tool: only enter your own key on a copy of the site you trust.</p><p><strong>Your journal is temporary.</strong> Journal text is kept in memory while the tab is open. Supporting excerpts that you approve become part of a chapter or mood estimate, so they appear in downloaded maps and in browser storage if you turn saving on.</p><p><strong>Your provider handles analysis.</strong> Its privacy policy, retention rules, and API charges apply. OpenAI requests include <code>store: false</code>; that does not override the provider’s other retention policies.</p><label class="checkbox-label remember-control"><input type="checkbox" id="remember-map" ${remember ? 'checked' : ''}><span><strong>Remember my map on this browser</strong><small>Saves birthday, chapters, mood estimates, and approved excerpts in local storage. Anyone using this browser profile can access them.</small></span></label><div class="privacy-actions"><button class="button outline" data-action="import-backup">${icon('upload')} Restore a saved map</button><button class="button danger-quiet" data-action="clear-data">${icon('trash-2')} Clear my data</button></div><p class="field-note">Browser saving is optional. Download a map to keep a portable copy without saving it in this browser.</p></div>`);
+  openModal('A private little space.', 'A few things worth knowing about your words.', `<div class="modal-body prose"><p><strong>Your map lives on your device.</strong> This is a static website. There’s no account, shared database, or analytics. Only entry fingerprints (not full text) are kept with your map to recognize journal updates. Journals are read locally and only sent to the AI endpoint you choose when you ask for an analysis.</p><p><strong>Your key stays in this tab’s memory.</strong> It is never saved to browser storage or exported. Refreshing clears it. This is a browser-based tool: only enter your own key on a copy of the site you trust.</p><p><strong>Your journal is temporary.</strong> Journal text is kept in memory while the tab is open. Supporting excerpts that you approve become part of a chapter or mood estimate, so they appear in downloaded maps and in browser storage if you turn saving on.</p><p><strong>Your provider handles analysis.</strong> Its privacy policy, retention rules, and API charges apply. OpenAI requests include <code>store: false</code>; that does not override the provider’s other retention policies.</p><label class="checkbox-label remember-control"><input type="checkbox" id="remember-map" ${remember ? 'checked' : ''}><span><strong>Remember my map on this browser</strong><small>Saves birthday, chapters, mood estimates, entry fingerprints, and approved excerpts in local storage. Anyone using this browser profile can access them.</small></span></label><div class="privacy-actions"><button class="button outline" data-action="import-backup">${icon('upload')} Restore a saved map</button><button class="button danger-quiet" data-action="clear-data">${icon('trash-2')} Clear my data</button></div><p class="field-note">Browser saving is optional. Download a map to keep a portable copy without saving it in this browser.</p></div>`);
   $('#remember-map').onchange = event => { remember = event.target.checked; persist(); toast(remember ? 'Your map will be remembered in this browser.' : 'Browser saving is off. The saved copy has been removed.'); };
 }
 
@@ -496,7 +548,7 @@ function showHow() {
 }
 
 function showExport() {
-  openModal('A little piece of your story.', 'Keep your map, or make something to pin to a wall.', `<div class="modal-body export-options"><button class="export-option" data-action="download-json">${icon('download')}<span><strong>Download my map</strong><small>A JSON backup you can restore here later. Includes chapters, mood estimates, and approved excerpts, never your key or full journal.</small></span>${icon('arrow-right')}</button><button class="export-option" data-action="download-svg">${icon('heart')}<span><strong>Download a little poster</strong><small>A crisp SVG of your life in weeks, with chapter colors and a legend. Print it or keep it close.</small></span>${icon('arrow-right')}</button><button class="link-button" data-action="import-backup">${icon('upload')} Restore a map you saved before</button></div>`);
+  openModal('A little piece of your story.', 'Keep your map, or make something to pin to a wall.', `<div class="modal-body export-options"><button class="export-option" data-action="download-json">${icon('download')}<span><strong>Download my map</strong><small>A JSON backup you can restore here later. Includes chapters, mood estimates, entry fingerprints, and approved excerpts, never your key or full journal.</small></span>${icon('arrow-right')}</button><button class="export-option" data-action="download-svg">${icon('heart')}<span><strong>Download a little poster</strong><small>A crisp SVG of your life in weeks, with chapter colors and a legend. Print it or keep it close.</small></span>${icon('arrow-right')}</button><button class="link-button" data-action="import-backup">${icon('upload')} Restore a map you saved before</button></div>`);
 }
 function download(data, type, name) { const url = URL.createObjectURL(new Blob([data], { type })); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 function exportSVG() {
@@ -541,18 +593,22 @@ $('#backup-input').onchange = async event => {
     const years = Number(data.years);
     if (!Number.isInteger(years) || years < 60 || years > 130 || years <= ageAt(data.birthday, today)) throw new Error('The backup has an invalid canvas length.');
     openModal('Bring this story back?', `${phases.length} chapters · birthday ${formatDate(data.birthday)}`, `<div class="modal-body"><p>This replaces the map currently open in this tab. Download your current map first if you’d like to keep both.</p><div class="modal-actions"><button class="button outline" data-action="close">Keep current map</button><button class="button primary" id="restore-confirm">Restore this map ${icon('check')}</button></div></div>`);
-    $('#restore-confirm').onclick = () => { state = { birthday: data.birthday, years, phases, milestones, moods, demo: false }; selected = null; $('#birthday').value = state.birthday; ensureHorizon(); render(); persist(); closeModal(); toast('Your story is back, just where you left it.'); };
+    $('#restore-confirm').onclick = () => { state = { birthday: data.birthday, years, phases, milestones, moods,analysisHistory:validateHistory(data.analysisHistory), demo: false }; selected = null; $('#birthday').value = state.birthday; ensureHorizon(); render(); persist(); closeModal(); toast('Your story is back, just where you left it.'); };
   } catch (error) { toast(error.message || 'That backup could not be opened.'); }
   event.target.value = '';
 };
 
 document.addEventListener('click', event => {
+  const yearStep=event.target.closest('[data-year-step]');
+  if(yearStep){focusYear+=Number(yearStep.dataset.yearStep);selectedMood=undefined;render();}
+  const moodEdit=event.target.closest('[data-mood-edit]');
+  if(moodEdit) showMoodCorrection(decodeURIComponent(moodEdit.dataset.moodEdit));
   const moodPeriodButton=event.target.closest('[data-mood-period]');
   if(moodPeriodButton) { moodPeriod=moodPeriodButton.dataset.moodPeriod; selectedMood=undefined; renderMood(); }
   const moodBucket=event.target.closest('[data-mood-bucket]');
   if(moodBucket) { event.preventDefault(); selectedMood=moodBucket.dataset.moodBucket; renderMood(); $('#mood-point')?.focus(); }
   const moodFind=event.target.closest('[data-mood-find]');
-  if(moodFind) { const index=Math.floor((dateValue(moodFind.dataset.moodFind)-dateValue(state.birthday))/WEEK); const square=$('[data-week="'+index+'"]'); square?.scrollIntoView({behavior:'smooth',block:'center'}); square?.focus(); }
+  if(moodFind) { if(view==='year'){focusYear=Number(moodFind.dataset.moodFind.slice(0,4));render();} const index=Math.floor((dateValue(moodFind.dataset.moodFind)-dateValue(state.birthday))/WEEK); const square=$(view==='year'?'#year-map [data-week="'+index+'"]':'#weeks-grid [data-week="'+index+'"]'); square?.scrollIntoView({behavior:'smooth',block:'center'}); square?.focus(); }
   const action = event.target.closest('[data-action]')?.dataset.action;
   if (action === 'close') closeModal();
   if (action === 'how') showHow();
@@ -566,16 +622,16 @@ document.addEventListener('click', event => {
   if (action === 'start') showStart();
   if (action === 'clear-filter') { selected = null; render(); }
   if (action === 'import-backup') $('#backup-input').click();
-  if (action === 'download-json') { download(JSON.stringify({ version: 1, birthday: state.birthday, years: state.years, phases: state.phases, milestones: state.milestones, moods:state.moods || [] }, null, 2), 'application/json', 'my-life-in-weeks.json'); toast('Your map is saved. Keep it somewhere private.'); }
+  if (action === 'download-json') { download(JSON.stringify({ version: 1, birthday: state.birthday, years: state.years, phases: state.phases, milestones: state.milestones, moods:state.moods || [],analysisHistory:state.analysisHistory }, null, 2), 'application/json', 'my-life-in-weeks.json'); toast('Your map is saved. Keep it somewhere private.'); }
   if (action === 'download-svg') exportSVG();
   if (action === 'clear-data') {
     openModal('Start with a fresh page?', 'Reset this map and return to the example.', `<div class="modal-body"><p>This clears your birthday, chapters, pencil notes, mood estimates, imported journal, analysis progress, and API keys from this tab and saved browser data. Downloaded backups stay on your device.</p><p class="field-note">Save your map first if you want to keep it.</p><div class="modal-actions"><button class="button outline" data-action="close">Keep my map</button><button class="button danger" id="clear-confirm">Reset everything</button></div></div>`);
     $('#clear-confirm').onclick = () => {
       activeAnalysis?.abort(); activeAnalysis = null; modalGeneration++;
       remember=false; journal=''; drafts=[]; draftMilestones=[]; draftMoods=[]; draftRejected=0;
-      analysisCheckpoint=null; journalEndingYear=undefined; journalPlan=null; readingFiles=false;
+      analysisCheckpoint=null; journalEndingYear=undefined; journalPlan=null; updatePlan=null; draftManifest=[]; updatePreviewToken++; fullAnalysisPreference=false; readingFiles=false;
       connection={provider:'openai',base:PROVIDERS.openai.base,model:PROVIDERS.openai.model,effort:'high',key:'',keys:[],concurrency:'auto'};
-      selected=null; selectedMilestone=null; selectedMood=undefined; moodPeriod='week'; showPencilNotes=true; view='all';
+      selected=null; selectedMilestone=null; selectedMood=undefined; moodPeriod='week'; focusYear=Number(today.slice(0,4)); showPencilNotes=true; view='all';
       state=demoState(today);
       $('#birthday').value=state.birthday; $('#years').value=state.years; $('#backup-input').value='';
       $$('[data-view]').forEach(b=>{b.classList.toggle('active',b.dataset.view===view);b.setAttribute('aria-pressed',b.dataset.view===view);});
@@ -596,7 +652,7 @@ document.addEventListener('click', event => {
   const deleteId = event.target.closest('[data-delete]')?.dataset.delete;
   if (deleteId) { state.phases = state.phases.filter(p => p.id !== deleteId); if (selected === deleteId) selected = null; render(); persist(); closeModal(); toast('Chapter removed from the map.'); }
   const noteId = event.target.closest('[data-note]')?.dataset.note;
-  if (noteId) { selectedMilestone = noteId; renderPencilNotes(); if (state.demo) { const m = state.milestones.find(n => n.id === noteId); openModal(escape(m.title), formatDate(m.date) + ' · an example pencil note', `<div class="modal-body prose"><p>${escape(m.summary)}</p><button class="button primary full" data-action="start">Start my own story ${icon('arrow-right')}</button></div>`); } else showNote(noteId); }
+  if (noteId) { if(event.target.closest('a[data-note]'))event.preventDefault(); selectedMilestone = noteId; renderPencilNotes(); if (state.demo) { const m = state.milestones.find(n => n.id === noteId); openModal(escape(m.title), formatDate(m.date) + ' · an example pencil note', `<div class="modal-body prose"><p>${escape(m.summary)}</p><button class="button primary full" data-action="start">Start my own story ${icon('arrow-right')}</button></div>`); } else showNote(noteId); }
   const deleteNote = event.target.closest('[data-delete-note]')?.dataset.deleteNote;
   if (deleteNote) { state.milestones = state.milestones.filter(m => m.id !== deleteNote); render(); persist(); closeModal(); toast('Pencil note erased.'); }
   const noteWeek = event.target.closest('[data-week-note]');
@@ -607,6 +663,14 @@ document.addEventListener('click', event => {
   if (viewButton) { view = viewButton.dataset.view; $$('[data-view]').forEach(b => { b.classList.toggle('active', b.dataset.view === view); b.setAttribute('aria-pressed', b.dataset.view === view); }); render(); }
 });
 
+$('#year-map').addEventListener('keydown',event=>{
+  const cell=event.target.closest('[data-week]');if(!cell)return;
+  const cells=$$('[data-week]',$('#year-map')),i=cells.indexOf(cell);
+  const cols=getComputedStyle($('.year-grid')).gridTemplateColumns.split(' ').length;
+  const offset={ArrowRight:1,ArrowLeft:-1,ArrowDown:cols,ArrowUp:-cols}[event.key];
+  const next=event.key==='Home'?cells[0]:event.key==='End'?cells.at(-1):cells[i+offset];
+  if(next){event.preventDefault();cell.tabIndex=-1;next.tabIndex=0;next.focus();}
+});
 const tooltip = $('#week-tooltip');
 $('#weeks-grid').addEventListener('pointerover', event => {
   const cell = event.target.closest('[data-week]'); if (!cell || event.pointerType === 'touch') return;
