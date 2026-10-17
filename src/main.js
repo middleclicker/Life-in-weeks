@@ -3,7 +3,7 @@ import { createIcons, ArrowRight, ArrowUpRight, Plus, X, Upload, Download, Calen
 import { COLORS, DAY, WEEK, ageAt, dateValue, demoState, formatDate, iso, makeCalendar, phaseWeeks, todayISO, validateMilestone, validatePhase } from './calendar.js';
 import { analyzeJournal, MAX_JOURNAL, curateMilestones, mergeMilestones, mergeSuggestions, MODEL_PRESETS, PROVIDERS, reasoningLevels, splitJournal, validateEndpoint } from './analysis.js';
 import { ACCEPT, readJournal } from './import.js';
-import { yearHTML, yearWeeks } from './year.js';
+import { YEAR_COLUMNS, yearHTML, yearWeeks } from './year.js';
 import { applyUpdate, planUpdate, validateHistory } from './updates.js';
 import { prepareJournal } from './chronology.js';
 import { mergeMoods, moodChartHTML, moodKey, moodLabel, validateMoodPoint } from './mood.js';
@@ -107,7 +107,7 @@ function render() {
   focusYear=Math.max(firstYear,Math.min(lastYear,focusYear));
   $('#focus-year').innerHTML=Array.from({length:lastYear-firstYear+1},(_,i)=>'<option value="'+(firstYear+i)+'" '+(firstYear+i===focusYear?'selected':'')+'>'+(firstYear+i)+'</option>').join('');
   $('#focus-year').onchange=event=>{focusYear=Number(event.target.value);selectedMood=undefined;render();};
-  $('#year-map').innerHTML=view==='year'?yearHTML(calendar,focusYear,{milestones:state.milestones,moods:state.moods || [],birthday:state.birthday,colors:COLORS}):'';
+  $('#year-map').innerHTML=view==='year'?yearHTML(calendar,focusYear,{milestones:state.milestones,moods:state.moods || [],birthday:state.birthday,colors:COLORS,selected}):'';
   const rows = view === 'lived' ? calendar.rows.filter(r => r.weeks.some(w => w.lived)) : calendar.rows;
   $('#weeks-grid').innerHTML = rows.map(row => `<div class="week-row ${row.age % 10 === 0 ? 'decade-row' : ''}" role="row" aria-label="Age ${row.age}"><span class="age-label" aria-hidden="true">${row.age % 5 === 0 || row.age === calendar.age ? row.age : ''}</span><div class="row-squares">${row.weeks.map((week, col) => {
     const fills = week.phases.map(p => COLORS[p.color].fill);
@@ -252,7 +252,7 @@ function showChapter(id, range) {
   if (state.demo) { showStart(() => showChapter()); return; }
   const phase = state.phases.find(p => p.id === id);
   const original = phase || { title: '', start: range?.start || today, end: range?.end || today, summary: '', color: 'sage' };
-  openModal(phase ? 'A chapter of your life' : 'Name this little season.', 'Your story, in your own words.', `<form id="chapter-form" class="modal-body"><label for="chapter-title">Chapter title</label><input id="chapter-title" maxlength="90" value="${escape(original.title)}" placeholder="Learning to show up" required autofocus><div class="two-fields"><div><label for="chapter-start">From</label><input id="chapter-start" type="date" min="${state.birthday}" max="${today}" value="${original.start}" required></div><div><label for="chapter-end">To</label><input id="chapter-end" type="date" min="${state.birthday}" max="${today}" value="${original.end}" required></div></div><label for="chapter-summary">A few words about this time</label><textarea id="chapter-summary" rows="3" maxlength="1200" placeholder="What was this season like?">${escape(original.summary)}</textarea><fieldset class="color-picker"><legend>A color for this chapter</legend>${Object.entries(COLORS).map(([key,c]) => `<label title="${c.label}" style="--swatch:${c.fill}"><input type="radio" name="chapter-color" value="${key}" ${key === original.color ? 'checked' : ''}><span>${icon('check')}</span><span class="sr-only">${c.label}</span></label>`).join('')}</fieldset>${phase?.evidence?.length ? `<details class="evidence"><summary>From your journal · ${phase.confidence === 'tentative' ? 'tentative interpretation' : 'supporting excerpts'}</summary>${evidenceHTML(phase)}</details>` : ''}<p id="chapter-error" class="form-error" role="alert"></p><div class="modal-actions">${phase ? `<button type="button" class="button danger-quiet" data-delete="${escape(id)}">${icon('trash-2')} Remove chapter</button>` : '<span></span>'}<button class="button primary" type="submit">${phase ? 'Save chapter' : 'Add to my map'} ${icon('check')}</button></div></form>`);
+  openModal(phase ? 'A chapter of your life' : 'Name this little season.', 'Your story, in your own words. Themes can overlap across the same weeks.', `<form id="chapter-form" class="modal-body"><label for="chapter-title">Chapter title</label><input id="chapter-title" maxlength="90" value="${escape(original.title)}" placeholder="Learning to show up" required autofocus><div class="two-fields"><div><label for="chapter-start">From</label><input id="chapter-start" type="date" min="${state.birthday}" max="${today}" value="${original.start}" required></div><div><label for="chapter-end">To</label><input id="chapter-end" type="date" min="${state.birthday}" max="${today}" value="${original.end}" required></div></div><label for="chapter-summary">A few words about this time</label><textarea id="chapter-summary" rows="3" maxlength="1200" placeholder="What was this season like?">${escape(original.summary)}</textarea><fieldset class="color-picker"><legend>A color for this chapter</legend>${Object.entries(COLORS).map(([key,c]) => `<label title="${c.label}" style="--swatch:${c.fill}"><input type="radio" name="chapter-color" value="${key}" ${key === original.color ? 'checked' : ''}><span>${icon('check')}</span><span class="sr-only">${c.label}</span></label>`).join('')}</fieldset>${phase?.evidence?.length ? `<details class="evidence"><summary>From your journal · ${phase.confidence === 'tentative' ? 'tentative interpretation' : 'supporting excerpts'}</summary>${evidenceHTML(phase)}</details>` : ''}<p id="chapter-error" class="form-error" role="alert"></p><div class="modal-actions">${phase ? `<button type="button" class="button danger-quiet" data-delete="${escape(id)}">${icon('trash-2')} Remove chapter</button>` : '<span></span>'}<button class="button primary" type="submit">${phase ? 'Save chapter' : 'Add to my map'} ${icon('check')}</button></div></form>`);
   $('#chapter-form').onsubmit = event => {
     event.preventDefault();
     const value = { ...original, id: id || crypto.randomUUID(), title: $('#chapter-title').value, start: $('#chapter-start').value, end: $('#chapter-end').value, summary: $('#chapter-summary').value, color: $('input[name="chapter-color"]:checked').value };
@@ -666,7 +666,7 @@ document.addEventListener('click', event => {
 $('#year-map').addEventListener('keydown',event=>{
   const cell=event.target.closest('[data-week]');if(!cell)return;
   const cells=$$('[data-week]',$('#year-map')),i=cells.indexOf(cell);
-  const cols=getComputedStyle($('.year-grid')).gridTemplateColumns.split(' ').length;
+  const cols=YEAR_COLUMNS;
   const offset={ArrowRight:1,ArrowLeft:-1,ArrowDown:cols,ArrowUp:-cols}[event.key];
   const next=event.key==='Home'?cells[0]:event.key==='End'?cells.at(-1):cells[i+offset];
   if(next){event.preventDefault();cell.tabIndex=-1;next.tabIndex=0;next.focus();}

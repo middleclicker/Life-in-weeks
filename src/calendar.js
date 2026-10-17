@@ -117,6 +117,8 @@ export function demoState(today = todayISO()) {
       p('demo-2', 'A leap into the unknown', `${year - 7}-07-01`, `${year - 5}-03-31`, 'blue', 'Moving to a new city and learning to make a life of my own.'),
       p('demo-3', 'Learning to show up', `${year - 4}-01-01`, `${year - 3}-10-31`, 'rose', 'Working through social anxiety, one small conversation at a time. Progress was rarely a straight line.'),
       p('demo-4', 'Growing into myself', `${year - 2}-02-01`, today, 'sage', 'Finding steadier routines, making room for creativity, and feeling a little more at home in myself.'),
+      p('demo-5', 'One small conversation', iso(dateValue(today)-210*DAY), iso(dateValue(today)-35*DAY), 'rose', 'An illustrative overlapping theme: practicing conversations while the rest of life kept happening.'),
+      p('demo-6', 'Making time to draw', iso(dateValue(today)-150*DAY), today, 'ochre', 'An illustrative overlapping theme: sketching in spare moments alongside work and friendships.'),
     ],
   };
 }

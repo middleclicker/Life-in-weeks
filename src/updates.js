@@ -32,7 +32,7 @@ export function applyUpdate(state,{phases=[],milestones=[],moods=[],manifest=[]}
   const keep=item=>item.source==='manual' || !affectedAI(item,keys,dates);
   const oldPhases=state.phases.filter(keep),oldNotes=state.milestones.filter(keep);
   // A corrected chapter keeps the original AI title and evidence so it cannot quietly reappear.
-  const protectedPhase=p=>oldPhases.some(m=>m.source==='manual' && ((m.originalTitle || m.title).toLowerCase()===p.title.toLowerCase() || m.evidence?.some(e=>e.entryKey && p.evidence?.some(n=>n.entryKey===e.entryKey))));
+  const protectedPhase=p=>oldPhases.some(m=>m.source==='manual' && (m.originalTitle || m.title).toLowerCase()===p.title.toLowerCase());
   const protectedNote=p=>oldNotes.some(m=>m.source==='manual' && ((m.originalTitle || m.title).toLowerCase()===p.title.toLowerCase() || (m.date===p.date && m.evidence?.some(e=>e.entryKey && p.evidence?.some(n=>n.entryKey===e.entryKey)))));
   const oldMoods=(state.moods || []).filter(p=>p.corrected || !(keys.has(p.entryKey) || (!p.entryKey && dates.has(p.date))));
   return {...state,phases:[...oldPhases,...phases.filter(p=>!protectedPhase(p))],milestones:[...oldNotes,...milestones.filter(p=>!protectedNote(p))],moods:[...oldMoods,...moods.filter(p=>!oldMoods.some(m=>m.corrected && (m.entryKey ? m.entryKey===p.entryKey : m.date===p.date && m.source===p.source)))],analysisHistory:mergeHistory(state.analysisHistory,manifest)};
